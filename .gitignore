@@ -1,0 +1,11 @@
+# Python / uv
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+*.egg-info/
+
+# Training images (can get large — optional to exclude)
+backend/images/
+
+# macOS
+.DS_Store

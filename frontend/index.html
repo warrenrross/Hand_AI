@@ -1,0 +1,1264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Train the Machine · RPS</title>
+
+  <!-- TensorFlow.js + MobileNet + KNN -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.0/dist/mobilenet.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/knn-classifier@1.2.4/dist/knn-classifier.min.js"></script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=Azeret+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── Design: Industrial arcade terminal. Black/lime/amber. Monospace data
+       meets bold display type. Scanlines, CRT glow, big numbers. ── */
+
+    :root {
+      --bg:        #0a0a0a;
+      --surface:   #111111;
+      --border:    #1f1f1f;
+      --lime:      #b8ff57;
+      --amber:     #ffb830;
+      --red:       #ff4545;
+      --muted:     #444;
+      --text:      #e8e8e8;
+      --font-head: 'Syne', sans-serif;
+      --font-mono: 'Azeret Mono', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-mono);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* scanline overlay */
+    body::after {
+      content: '';
+      position: fixed; inset: 0;
+      background: repeating-linear-gradient(
+        0deg, transparent, transparent 2px,
+        rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px
+      );
+      pointer-events: none;
+      z-index: 1000;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.25rem 2rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      font-family: var(--font-head);
+      font-weight: 800;
+      font-size: 1.4rem;
+      letter-spacing: -0.02em;
+    }
+    .logo span { color: var(--lime); }
+
+    .status-bar {
+      font-size: 0.7rem;
+      color: var(--muted);
+      display: flex;
+      gap: 1.5rem;
+    }
+    .status-dot {
+      display: inline-block;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .status-dot.live { background: var(--lime); box-shadow: 0 0 6px var(--lime); animation: pulse 1.5s infinite; }
+
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+    /* ── Stage Tabs ── */
+    .stage-nav {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+    }
+    .stage-tab {
+      padding: 0.9rem 1.5rem;
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: 0.85rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.2s, border-color 0.2s;
+      background: none; border-top: none; border-left: none; border-right: none;
+    }
+    .stage-tab:hover { color: var(--text); }
+    .stage-tab.active { color: var(--lime); border-bottom-color: var(--lime); }
+    .stage-tab.locked { opacity: 0.3; cursor: not-allowed; }
+
+    /* ── Stage Panels ── */
+    .stage { display: none; padding: 2rem; }
+    .stage.active { display: block; }
+
+    /* ── STAGE 1: Training ── */
+    .train-layout {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 2rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    /* Webcam panel */
+    .webcam-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+    .webcam-panel-header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.7rem;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+    }
+    #webcam-container {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4/3;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #webcam {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1); /* mirror */
+    }
+    .webcam-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    /* corner brackets */
+    .corner { position: absolute; width: 20px; height: 20px; }
+    .corner.tl { top: 12px; left: 12px; border-top: 2px solid var(--lime); border-left: 2px solid var(--lime); }
+    .corner.tr { top: 12px; right: 12px; border-top: 2px solid var(--lime); border-right: 2px solid var(--lime); }
+    .corner.bl { bottom: 12px; left: 12px; border-bottom: 2px solid var(--lime); border-left: 2px solid var(--lime); }
+    .corner.br { bottom: 12px; right: 12px; border-bottom: 2px solid var(--lime); border-right: 2px solid var(--lime); }
+
+    .capture-flash {
+      position: absolute;
+      inset: 0;
+      background: white;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.05s;
+    }
+    .capture-flash.flash { opacity: 0.7; }
+
+    /* Prediction readout */
+    .live-prediction {
+      padding: 0.75rem 1rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.7rem;
+    }
+    .prediction-label {
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: 1.4rem;
+      color: var(--lime);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      min-width: 140px;
+    }
+    .prediction-conf { color: var(--muted); }
+
+    /* Training controls */
+    .train-controls { display: flex; flex-direction: column; gap: 1.25rem; }
+
+    .section-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+
+    /* Class buttons */
+    .class-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+
+    .class-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1rem;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.15s, background 0.15s, transform 0.1s;
+      position: relative;
+      overflow: hidden;
+    }
+    .class-btn:hover { border-color: var(--lime); background: #161616; }
+    .class-btn:active { transform: scale(0.97); }
+    .class-btn.selected { border-color: var(--lime); background: #141a0a; }
+
+    .class-btn .emoji {
+      font-size: 2rem;
+      display: block;
+      margin-bottom: 0.4rem;
+      line-height: 1;
+    }
+    .class-btn .class-name {
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .class-btn .count {
+      font-size: 0.65rem;
+      color: var(--muted);
+      margin-top: 0.2rem;
+    }
+    .class-btn .count .num {
+      color: var(--lime);
+      font-weight: 500;
+    }
+
+    .class-btn.rock   .class-name { color: var(--amber); }
+    .class-btn.paper  .class-name { color: #57c8ff; }
+    .class-btn.scissors .class-name { color: var(--red); }
+    .class-btn.background .class-name { color: var(--muted); }
+
+    /* Capture action area */
+    .capture-area {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1.25rem;
+    }
+    .selected-class-display {
+      font-family: var(--font-head);
+      font-weight: 800;
+      font-size: 2rem;
+      text-transform: uppercase;
+      letter-spacing: -0.01em;
+      margin-bottom: 0.5rem;
+      min-height: 2.5rem;
+      color: var(--lime);
+    }
+    .capture-hint {
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+    #capture-btn {
+      width: 100%;
+      padding: 0.9rem;
+      background: var(--lime);
+      color: #000;
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    #capture-btn:hover { opacity: 0.9; }
+    #capture-btn:active { transform: scale(0.98); }
+    #capture-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* Sample strip */
+    .sample-strip {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      margin-top: 0.75rem;
+      min-height: 36px;
+    }
+    .sample-thumb {
+      width: 32px; height: 32px;
+      border-radius: 2px;
+      object-fit: cover;
+      border: 1px solid var(--border);
+      opacity: 0;
+      animation: fadeIn 0.3s forwards;
+    }
+    @keyframes fadeIn { to { opacity: 1; } }
+
+    /* Model controls */
+    .model-controls {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1.25rem;
+    }
+
+    .progress-bar-wrap {
+      background: var(--border);
+      border-radius: 2px;
+      height: 4px;
+      margin-bottom: 1rem;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--lime);
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.4s;
+    }
+
+    .readiness-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    .readiness-item {
+      text-align: center;
+      padding: 0.4rem;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+    }
+    .readiness-item .r-count {
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: var(--lime);
+    }
+    .readiness-item .r-label {
+      font-size: 0.55rem;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    #go-game-btn {
+      width: 100%;
+      padding: 0.9rem;
+      background: transparent;
+      border: 1px solid var(--lime);
+      color: var(--lime);
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    #go-game-btn:hover { background: var(--lime); color: #000; }
+    #go-game-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    #go-game-btn:disabled:hover { background: transparent; color: var(--lime); }
+
+    /* Upload status log */
+    .upload-log {
+      font-size: 0.65rem;
+      color: var(--muted);
+      max-height: 60px;
+      overflow-y: auto;
+      padding: 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      background: #000;
+    }
+    .upload-log div { margin-bottom: 1px; }
+    .upload-log .ok  { color: #6fcc6f; }
+    .upload-log .err { color: var(--red); }
+
+    /* ── STAGE 2: Game ── */
+    .game-layout {
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .game-header-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      margin-bottom: 1.5rem;
+    }
+
+    .score-board {
+      display: flex;
+      gap: 2rem;
+    }
+    .score-item { text-align: center; }
+    .score-num {
+      font-family: var(--font-head);
+      font-weight: 800;
+      font-size: 3rem;
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+    .score-num.correct { color: var(--lime); }
+    .score-num.wrong   { color: var(--red); }
+    .score-num.total   { color: var(--muted); }
+    .score-lbl {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+    }
+
+    /* Image test area */
+    .test-arena {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 1.5rem;
+    }
+    .arena-header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.7rem;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+    }
+    .arena-body {
+      display: flex;
+      align-items: stretch;
+      min-height: 320px;
+    }
+    .arena-img-wrap {
+      flex: 1;
+      position: relative;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #test-img {
+      max-width: 100%;
+      max-height: 320px;
+      object-fit: contain;
+      display: block;
+    }
+    .result-badge {
+      position: absolute;
+      top: 12px; right: 12px;
+      padding: 0.3rem 0.75rem;
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      border-radius: 3px;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .result-badge.correct { background: var(--lime); color: #000; opacity: 1; }
+    .result-badge.wrong   { background: var(--red);  color: #fff; opacity: 1; }
+
+    .arena-verdict {
+      width: 220px;
+      padding: 1.5rem;
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.75rem;
+    }
+    .verdict-truth {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+    }
+    .verdict-label-true {
+      font-family: var(--font-head);
+      font-weight: 800;
+      font-size: 2rem;
+      text-transform: uppercase;
+      letter-spacing: -0.01em;
+      color: var(--text);
+    }
+    .verdict-divider { height: 1px; background: var(--border); }
+    .verdict-ai {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+    }
+    .verdict-label-ai {
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: 1.5rem;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .verdict-conf {
+      font-size: 0.65rem;
+      color: var(--muted);
+    }
+
+    /* Progress row */
+    .image-progress {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+    .prog-pip {
+      width: 28px; height: 6px;
+      border-radius: 2px;
+      background: var(--border);
+      transition: background 0.3s;
+    }
+    .prog-pip.correct { background: var(--lime); }
+    .prog-pip.wrong   { background: var(--red); }
+    .prog-pip.current { background: var(--amber); animation: pulse 0.8s infinite; }
+
+    /* Game controls */
+    .game-btns {
+      display: flex;
+      gap: 1rem;
+    }
+    #start-game-btn, #restart-game-btn {
+      padding: 0.8rem 1.5rem;
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    #start-game-btn {
+      background: var(--lime);
+      color: #000;
+      border: none;
+    }
+    #start-game-btn:hover { opacity: 0.9; }
+    #start-game-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    #restart-game-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      display: none;
+    }
+    #restart-game-btn:hover { border-color: var(--text); }
+
+    /* Final results overlay */
+    .final-results {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2rem;
+      text-align: center;
+      margin-top: 1.5rem;
+    }
+    .final-results.show { display: block; }
+    .final-score-big {
+      font-family: var(--font-head);
+      font-weight: 800;
+      font-size: 5rem;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      margin-bottom: 0.5rem;
+    }
+    .final-grade {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--muted);
+      margin-bottom: 1.5rem;
+    }
+    .retrain-hint {
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+
+    /* Loading overlay */
+    .loading-screen {
+      position: fixed; inset: 0;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 900;
+      gap: 1rem;
+    }
+    .loading-screen.hidden { display: none; }
+    .loading-title {
+      font-family: var(--font-head);
+      font-weight: 800;
+      font-size: 2.5rem;
+      color: var(--lime);
+      letter-spacing: -0.02em;
+    }
+    .loading-sub {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .loading-bar {
+      width: 200px; height: 2px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .loading-bar-fill {
+      height: 100%;
+      background: var(--lime);
+      animation: loadProgress 2.5s ease-out forwards;
+    }
+    @keyframes loadProgress { from { width: 0%; } to { width: 100%; } }
+
+    /* Tooltip for no-server mode */
+    .no-server-note {
+      font-size: 0.65rem;
+      color: var(--muted);
+      padding: 0.5rem;
+      border: 1px dashed var(--border);
+      border-radius: 3px;
+      margin-top: 0.5rem;
+    }
+
+    @media (max-width: 768px) {
+      .train-layout { grid-template-columns: 1fr; }
+      .arena-body { flex-direction: column; }
+      .arena-verdict { width: 100%; border-left: none; border-top: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Loading screen -->
+<div class="loading-screen" id="loading-screen">
+  <div class="loading-title">RPS.AI</div>
+  <div class="loading-sub">Loading MobileNet model...</div>
+  <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+</div>
+
+<!-- Header -->
+<header>
+  <div class="logo">RPS<span>.</span>AI</div>
+  <div class="status-bar">
+    <span><span class="status-dot live" id="model-dot"></span>Model ready</span>
+    <span id="header-stats">Loading...</span>
+  </div>
+</header>
+
+<!-- Stage tabs -->
+<nav class="stage-nav">
+  <button class="stage-tab active" data-stage="train">01 · Train</button>
+  <button class="stage-tab locked" data-stage="game" id="game-tab">02 · Game</button>
+</nav>
+
+<!-- ── STAGE 1: TRAIN ── -->
+<section class="stage active" id="stage-train">
+  <div class="train-layout">
+
+    <!-- LEFT: Webcam -->
+    <div>
+      <div class="webcam-panel">
+        <div class="webcam-panel-header">
+          <span>LIVE FEED</span>
+          <span id="cam-res">—</span>
+        </div>
+        <div id="webcam-container">
+          <video id="webcam" autoplay playsinline muted></video>
+          <canvas id="hidden-canvas" style="display:none"></canvas>
+          <div class="webcam-overlay">
+            <div class="corner tl"></div>
+            <div class="corner tr"></div>
+            <div class="corner bl"></div>
+            <div class="corner br"></div>
+          </div>
+          <div class="capture-flash" id="capture-flash"></div>
+        </div>
+        <div class="live-prediction">
+          <div>
+            <div style="font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:2px;">AI Predicting</div>
+            <div class="prediction-label" id="live-pred">—</div>
+          </div>
+          <div class="prediction-conf" id="live-conf">train first</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Controls -->
+    <div class="train-controls">
+
+      <!-- Class selector -->
+      <div>
+        <div class="section-label">1. Select a class to train</div>
+        <div class="class-grid">
+          <button class="class-btn rock"       data-class="rock"       data-emoji="✊" onclick="selectClass(this)">
+            <span class="emoji">✊</span>
+            <div class="class-name">Rock</div>
+            <div class="count">Samples: <span class="num" id="count-rock">0</span></div>
+          </button>
+          <button class="class-btn paper"      data-class="paper"      data-emoji="✋" onclick="selectClass(this)">
+            <span class="emoji">✋</span>
+            <div class="class-name">Paper</div>
+            <div class="count">Samples: <span class="num" id="count-paper">0</span></div>
+          </button>
+          <button class="class-btn scissors"   data-class="scissors"   data-emoji="✌️" onclick="selectClass(this)">
+            <span class="emoji">✌️</span>
+            <div class="class-name">Scissors</div>
+            <div class="count">Samples: <span class="num" id="count-scissors">0</span></div>
+          </button>
+          <button class="class-btn background" data-class="background" data-emoji="🚫" onclick="selectClass(this)">
+            <span class="emoji">🚫</span>
+            <div class="class-name">None</div>
+            <div class="count">Samples: <span class="num" id="count-background">0</span></div>
+          </button>
+        </div>
+      </div>
+
+      <!-- Capture area -->
+      <div class="capture-area">
+        <div class="section-label">2. Capture samples</div>
+        <div class="selected-class-display" id="selected-display">—</div>
+        <div class="capture-hint">Hold your hand gesture steady, then click capture. Aim for 10+ samples per class with varied angles.</div>
+        <button id="capture-btn" disabled onclick="captureImage()">
+          📸 Capture Sample
+        </button>
+        <div class="sample-strip" id="sample-strip"></div>
+      </div>
+
+      <!-- Readiness + go -->
+      <div class="model-controls">
+        <div class="section-label">3. Training progress</div>
+        <div class="readiness-grid">
+          <div class="readiness-item">
+            <div class="r-count" id="r-rock">0</div>
+            <div class="r-label">✊</div>
+          </div>
+          <div class="readiness-item">
+            <div class="r-count" id="r-paper">0</div>
+            <div class="r-label">✋</div>
+          </div>
+          <div class="readiness-item">
+            <div class="r-count" id="r-scissors">0</div>
+            <div class="r-label">✌️</div>
+          </div>
+          <div class="readiness-item">
+            <div class="r-count" id="r-background">0</div>
+            <div class="r-label">🚫</div>
+          </div>
+        </div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar-fill" id="readiness-bar"></div>
+        </div>
+        <button id="go-game-btn" disabled onclick="goToGame()">
+          → Launch Game
+        </button>
+        <div class="no-server-note" id="server-note">
+          ⚠ Backend offline — images train locally only (not saved to DB).
+        </div>
+      </div>
+
+      <!-- Upload log -->
+      <div>
+        <div class="section-label">Upload log</div>
+        <div class="upload-log" id="upload-log">
+          <div>Waiting for captures...</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── STAGE 2: GAME ── -->
+<section class="stage" id="stage-game">
+  <div class="game-layout">
+
+    <div class="game-header-row">
+      <div>
+        <div class="section-label">AI Performance Test</div>
+        <div style="font-family:var(--font-head);font-weight:800;font-size:1.6rem;letter-spacing:-0.02em;">
+          15-Round Gauntlet
+        </div>
+      </div>
+      <div class="score-board">
+        <div class="score-item">
+          <div class="score-num correct" id="score-correct">0</div>
+          <div class="score-lbl">Correct</div>
+        </div>
+        <div class="score-item">
+          <div class="score-num wrong" id="score-wrong">0</div>
+          <div class="score-lbl">Wrong</div>
+        </div>
+        <div class="score-item">
+          <div class="score-num total" id="score-total">0</div>
+          <div class="score-lbl">/ 15</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Progress pips -->
+    <div class="image-progress" id="progress-pips"></div>
+
+    <!-- Test arena -->
+    <div class="test-arena">
+      <div class="arena-header">
+        <span id="arena-round">Round — / 15</span>
+        <span id="arena-status">Press Start Game to begin</span>
+      </div>
+      <div class="arena-body">
+        <div class="arena-img-wrap">
+          <img id="test-img" src="" alt="Test image" style="display:none" />
+          <div id="result-badge" class="result-badge"></div>
+          <div id="arena-placeholder" style="color:var(--muted);font-size:0.75rem;">
+            Images will appear here
+          </div>
+        </div>
+        <div class="arena-verdict">
+          <div class="verdict-truth">Correct answer</div>
+          <div class="verdict-label-true" id="verdict-true">—</div>
+          <div class="verdict-divider"></div>
+          <div class="verdict-ai">AI guessed</div>
+          <div class="verdict-label-ai" id="verdict-ai-label">—</div>
+          <div class="verdict-conf" id="verdict-conf">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="game-btns">
+      <button id="start-game-btn" onclick="startGame()">▶ Start Game</button>
+      <button id="restart-game-btn" onclick="restartGame()">↺ Play Again</button>
+    </div>
+
+    <!-- Final score -->
+    <div class="final-results" id="final-results">
+      <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin-bottom:0.75rem;">
+        Final Score
+      </div>
+      <div class="final-score-big" id="final-score-big">—</div>
+      <div class="final-grade" id="final-grade"></div>
+      <div class="retrain-hint">
+        To improve your score, go back to Stage 1 and add more training samples — especially for the gestures your AI got wrong.
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────── -->
+<script>
+// ── CONFIG ──────────────────────────────────────
+const API_BASE = 'http://localhost:8000'; // Change to your deployed URL
+const CLASS_NAMES = ['rock', 'paper', 'scissors', 'background'];
+const MIN_SAMPLES_PER_CLASS = 5;   // to enable game button
+const GAME_ROUNDS = 15;
+const ROUND_DELAY_MS = 2200;       // ms between rounds so user can see result
+
+// ── STATE ───────────────────────────────────────
+let net = null;             // MobileNet model
+let classifier = null;      // KNN classifier
+let webcamStream = null;
+let selectedClass = null;
+let sampleCounts = { rock: 0, paper: 0, scissors: 0, background: 0 };
+let predictionLoop = null;
+let serverOnline = false;
+
+// Game state
+let gameImages = [];
+let currentRound = 0;
+let scores = { correct: 0, wrong: 0 };
+let gameRunning = false;
+
+// ── INIT ─────────────────────────────────────────
+async function init() {
+  try {
+    await checkServer();
+    await setupWebcam();
+    net = await mobilenet.load();
+    classifier = knnClassifier.create();
+    document.getElementById('loading-screen').classList.add('hidden');
+    startPredictionLoop();
+    updateHeaderStats();
+  } catch (e) {
+    console.error('Init error:', e);
+    document.getElementById('loading-screen').classList.add('hidden');
+  }
+}
+
+async function checkServer() {
+  try {
+    const res = await fetch(`${API_BASE}/stats`, { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      serverOnline = true;
+      document.getElementById('server-note').style.display = 'none';
+    }
+  } catch {
+    serverOnline = false;
+  }
+}
+
+async function setupWebcam() {
+  const video = document.getElementById('webcam');
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
+  });
+  video.srcObject = stream;
+  webcamStream = stream;
+  return new Promise(resolve => {
+    video.onloadedmetadata = () => {
+      document.getElementById('cam-res').textContent =
+        `${video.videoWidth}×${video.videoHeight}`;
+      resolve();
+    };
+  });
+}
+
+// ── CLASS SELECTION ──────────────────────────────
+function selectClass(btn) {
+  document.querySelectorAll('.class-btn').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  selectedClass = btn.dataset.class;
+  document.getElementById('selected-display').textContent =
+    btn.dataset.emoji + '  ' + btn.dataset.class.toUpperCase();
+  document.getElementById('capture-btn').disabled = false;
+}
+
+// ── CAPTURE ──────────────────────────────────────
+async function captureImage() {
+  if (!selectedClass || !net) return;
+
+  const video = document.getElementById('webcam');
+  const canvas = document.getElementById('hidden-canvas');
+  canvas.width = 224; canvas.height = 224;
+  const ctx = canvas.getContext('2d');
+
+  // Mirror the draw to match the display
+  ctx.save();
+  ctx.translate(224, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(video, 0, 0, 224, 224);
+  ctx.restore();
+
+  // Flash effect
+  const flash = document.getElementById('capture-flash');
+  flash.classList.add('flash');
+  setTimeout(() => flash.classList.remove('flash'), 150);
+
+  // Add to KNN classifier
+  const imgTensor = tf.browser.fromPixels(canvas);
+  const activation = net.infer(imgTensor, true);
+  classifier.addExample(activation, selectedClass);
+  imgTensor.dispose();
+
+  // Update counts
+  sampleCounts[selectedClass]++;
+  updateCounts();
+
+  // Add thumbnail
+  const thumb = document.createElement('img');
+  thumb.className = 'sample-thumb';
+  thumb.src = canvas.toDataURL('image/jpeg', 0.8);
+  document.getElementById('sample-strip').prepend(thumb);
+
+  // Upload to server
+  if (serverOnline) {
+    await uploadToServer(canvas, selectedClass);
+  }
+}
+
+async function uploadToServer(canvas, label) {
+  try {
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+    const form = new FormData();
+    form.append('file', blob, `${label}_${Date.now()}.jpg`);
+    form.append('label', label);
+
+    const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: form });
+    const data = await res.json();
+
+    logUpload(`✓ Saved ${label} → ${data.filename}`, 'ok');
+  } catch (e) {
+    logUpload(`✗ Upload failed: ${e.message}`, 'err');
+  }
+}
+
+function logUpload(msg, type = '') {
+  const log = document.getElementById('upload-log');
+  const div = document.createElement('div');
+  div.textContent = msg;
+  if (type) div.classList.add(type);
+  log.prepend(div);
+}
+
+// ── COUNTS & READINESS ────────────────────────────
+function updateCounts() {
+  for (const c of CLASS_NAMES) {
+    document.getElementById(`count-${c}`).textContent = sampleCounts[c];
+    document.getElementById(`r-${c}`).textContent = sampleCounts[c];
+  }
+
+  const ready = CLASS_NAMES.filter(c => sampleCounts[c] >= MIN_SAMPLES_PER_CLASS);
+  const pct = (ready.length / CLASS_NAMES.length) * 100;
+  document.getElementById('readiness-bar').style.width = pct + '%';
+
+  const allReady = ready.length === CLASS_NAMES.length;
+  document.getElementById('go-game-btn').disabled = !allReady;
+  document.getElementById('game-tab').classList.toggle('locked', !allReady);
+}
+
+function updateHeaderStats() {
+  const total = Object.values(sampleCounts).reduce((a, b) => a + b, 0);
+  document.getElementById('header-stats').textContent =
+    `${total} samples · ${serverOnline ? 'server online' : 'local only'}`;
+  setTimeout(updateHeaderStats, 3000);
+}
+
+// ── LIVE PREDICTION LOOP ──────────────────────────
+function startPredictionLoop() {
+  const video = document.getElementById('webcam');
+  const canvas = document.getElementById('hidden-canvas');
+
+  async function tick() {
+    if (classifier && classifier.getNumClasses() > 0) {
+      try {
+        canvas.width = 224; canvas.height = 224;
+        const ctx = canvas.getContext('2d');
+        ctx.save(); ctx.translate(224,0); ctx.scale(-1,1);
+        ctx.drawImage(video, 0, 0, 224, 224);
+        ctx.restore();
+
+        const imgTensor = tf.browser.fromPixels(canvas);
+        const activation = net.infer(imgTensor, true);
+        const result = await classifier.predictClass(activation);
+        imgTensor.dispose();
+
+        const confidence = Math.round((result.confidences[result.label] || 0) * 100);
+        document.getElementById('live-pred').textContent = result.label;
+        document.getElementById('live-conf').textContent = confidence + '% conf.';
+      } catch {}
+    }
+    predictionLoop = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+// ── STAGE NAVIGATION ──────────────────────────────
+function goToGame() {
+  switchStage('game');
+  buildProgressPips();
+}
+
+function switchStage(name) {
+  document.querySelectorAll('.stage').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.stage-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(`stage-${name}`).classList.add('active');
+  document.querySelector(`[data-stage="${name}"]`).classList.add('active');
+}
+
+document.querySelectorAll('.stage-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    if (!tab.classList.contains('locked')) switchStage(tab.dataset.stage);
+  });
+});
+
+// ── GAME ─────────────────────────────────────────
+function buildProgressPips() {
+  const container = document.getElementById('progress-pips');
+  container.innerHTML = '';
+  for (let i = 0; i < GAME_ROUNDS; i++) {
+    const pip = document.createElement('div');
+    pip.className = 'prog-pip';
+    pip.id = `pip-${i}`;
+    container.appendChild(pip);
+  }
+}
+
+async function startGame() {
+  if (!classifier || classifier.getNumClasses() === 0) {
+    alert('Train your model first!');
+    return;
+  }
+
+  document.getElementById('start-game-btn').disabled = true;
+  document.getElementById('restart-game-btn').style.display = 'none';
+  document.getElementById('final-results').classList.remove('show');
+  scores = { correct: 0, wrong: 0 };
+  currentRound = 0;
+  updateScoreDisplay();
+  buildProgressPips();
+
+  // Fetch images from server, or fall back to local samples
+  try {
+    if (serverOnline) {
+      const res = await fetch(`${API_BASE}/images-for-game?count=${GAME_ROUNDS}`);
+      const data = await res.json();
+      gameImages = data.images.map(img => ({
+        url: `${API_BASE}${img.url}`,
+        label: img.label
+      }));
+    } else {
+      alert('Server offline — game requires saved images. Train some samples first and start the backend.');
+      document.getElementById('start-game-btn').disabled = false;
+      return;
+    }
+  } catch (e) {
+    alert('Could not load game images from server: ' + e.message);
+    document.getElementById('start-game-btn').disabled = false;
+    return;
+  }
+
+  gameRunning = true;
+  runRound();
+}
+
+async function runRound() {
+  if (currentRound >= gameImages.length || currentRound >= GAME_ROUNDS) {
+    endGame();
+    return;
+  }
+
+  const item = gameImages[currentRound];
+  const pip = document.getElementById(`pip-${currentRound}`);
+  if (pip) pip.className = 'prog-pip current';
+
+  // Show image
+  const img = document.getElementById('test-img');
+  const placeholder = document.getElementById('arena-placeholder');
+  img.style.display = 'block';
+  placeholder.style.display = 'none';
+  img.src = item.url;
+
+  document.getElementById('arena-round').textContent =
+    `Round ${currentRound + 1} / ${Math.min(GAME_ROUNDS, gameImages.length)}`;
+  document.getElementById('arena-status').textContent = 'Classifying...';
+  document.getElementById('result-badge').className = 'result-badge';
+  document.getElementById('verdict-true').textContent = item.label.toUpperCase();
+  document.getElementById('verdict-ai-label').textContent = '...';
+  document.getElementById('verdict-conf').textContent = '';
+
+  // Wait for image to load then classify
+  await new Promise(resolve => {
+    if (img.complete) resolve();
+    else img.onload = resolve;
+  });
+
+  const canvas = document.getElementById('hidden-canvas');
+  canvas.width = 224; canvas.height = 224;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, 224, 224);
+
+  const imgTensor = tf.browser.fromPixels(canvas);
+  const activation = net.infer(imgTensor, true);
+  const result = await classifier.predictClass(activation);
+  imgTensor.dispose();
+
+  const confidence = Math.round((result.confidences[result.label] || 0) * 100);
+  const isCorrect = result.label === item.label;
+
+  // Update verdict panel
+  document.getElementById('verdict-ai-label').textContent = result.label.toUpperCase();
+  document.getElementById('verdict-ai-label').style.color =
+    isCorrect ? 'var(--lime)' : 'var(--red)';
+  document.getElementById('verdict-conf').textContent = `${confidence}% confidence`;
+  document.getElementById('arena-status').textContent = isCorrect ? '✓ Correct!' : '✗ Wrong';
+
+  // Badge
+  const badge = document.getElementById('result-badge');
+  badge.textContent = isCorrect ? 'CORRECT ✓' : 'WRONG ✗';
+  badge.className = `result-badge ${isCorrect ? 'correct' : 'wrong'}`;
+
+  // Pip
+  if (pip) pip.className = `prog-pip ${isCorrect ? 'correct' : 'wrong'}`;
+
+  // Score
+  if (isCorrect) scores.correct++; else scores.wrong++;
+  updateScoreDisplay();
+
+  currentRound++;
+  await sleep(ROUND_DELAY_MS);
+  runRound();
+}
+
+function endGame() {
+  gameRunning = false;
+  document.getElementById('restart-game-btn').style.display = 'inline-block';
+
+  const total = Math.min(GAME_ROUNDS, gameImages.length);
+  const pct = Math.round((scores.correct / total) * 100);
+
+  const gradeMap = [
+    [90, 'Outstanding — Your AI is well trained! 🏆', 'var(--lime)'],
+    [70, 'Good Performance — A few more samples would help', 'var(--lime)'],
+    [50, 'Needs Work — Try capturing more varied angles', 'var(--amber)'],
+    [0,  'Keep Training — Add more samples to each class!', 'var(--red)'],
+  ];
+  const [, grade, color] = gradeMap.find(([min]) => pct >= min);
+
+  document.getElementById('final-score-big').textContent = `${scores.correct}/${total}`;
+  document.getElementById('final-score-big').style.color = color;
+  document.getElementById('final-grade').textContent = grade;
+  document.getElementById('final-results').classList.add('show');
+  document.getElementById('arena-status').textContent = 'Game over!';
+}
+
+function updateScoreDisplay() {
+  document.getElementById('score-correct').textContent = scores.correct;
+  document.getElementById('score-wrong').textContent = scores.wrong;
+  document.getElementById('score-total').textContent = currentRound;
+}
+
+function restartGame() {
+  document.getElementById('start-game-btn').disabled = false;
+  document.getElementById('restart-game-btn').style.display = 'none';
+  document.getElementById('final-results').classList.remove('show');
+  document.getElementById('test-img').style.display = 'none';
+  document.getElementById('arena-placeholder').style.display = 'block';
+  document.getElementById('result-badge').className = 'result-badge';
+  document.getElementById('verdict-true').textContent = '—';
+  document.getElementById('verdict-ai-label').textContent = '—';
+  document.getElementById('verdict-conf').textContent = '—';
+  document.getElementById('arena-round').textContent = 'Round — / 15';
+  document.getElementById('arena-status').textContent = 'Press Start Game to begin';
+  scores = { correct: 0, wrong: 0 };
+  currentRound = 0;
+  updateScoreDisplay();
+  buildProgressPips();
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── BOOT ─────────────────────────────────────────
+init();
+</script>
+</body>
+</html>
